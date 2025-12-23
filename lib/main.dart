@@ -2,8 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'dart:io' show Platform;
 import 'dart:convert';
-import 'dart:io';
-import 'package:path_provider/path_provider.dart';
+import 'dart:math' as Math;
 
 final String SERVER_URL = Platform.isAndroid
     ? 'http://10.0.2.2:3002'
@@ -142,13 +141,27 @@ class _MediaDisplayScreenState extends State<MediaDisplayScreen> {
     debugPrint('🎨 PLAYLIST JSON RECEIVED: $data');
     if (data == null) return;
 
-    // Parse playlist JSON
+    if (data['content'] == null) {
+      debugPrint('❌ No content field in data');
+      return;
+    }
     final playlist = jsonDecode(data['content']);
+    debugPrint('🎨 Parsed playlist: $playlist');
     final designRefs = playlist['designReferences'] as List;
+    debugPrint('🎨 designReferences count: ${designRefs.length}');
     List<Map<String, dynamic>> designs = [];
     for (var ref in designRefs) {
+      debugPrint('🎨 DESIGN REF: $ref');
       if (ref['designJSON'] != null) {
+        debugPrint('🎨 designJSON: ${ref['designJSON']}');
+        if (ref['designJSON']['elements'] != null) {
+          debugPrint('🎨 ELEMENTS: ${ref['designJSON']['elements']}');
+        } else {
+          debugPrint('❌ No elements in designJSON');
+        }
         designs.add(Map<String, dynamic>.from(ref['designJSON']));
+      } else {
+        debugPrint('❌ No designJSON in design reference');
       }
     }
 
@@ -244,26 +257,23 @@ class _MediaDisplayScreenState extends State<MediaDisplayScreen> {
       );
     }
 
-    double designW = (_currentMetadata?['canvasWidth'] ?? 1280).toDouble();
-    double designH = (_currentMetadata?['canvasHeight'] ?? 720).toDouble();
-    Color bg = Colors.white;
-    if (_currentMetadata?['canvasColor'] != null) {
-      try {
-        bg = Color(
-          int.parse(_currentMetadata!['canvasColor'].replaceFirst('#', '0xff')),
-        );
-      } catch (_) {}
-    }
+    double designW = (_currentMetadata!['canvasWidth'] ?? 1280).toDouble();
+    double designH = (_currentMetadata!['canvasHeight'] ?? 720).toDouble();
+    Color bg = _parseColor(_currentMetadata!['canvasColor'] ?? '#FFFFFF');
+
+    final elements = (_currentDesign!['elements'] is List)
+        ? (_currentDesign!['elements'] as List)
+              .whereType<Map<String, dynamic>>()
+              .toList()
+        : <Map<String, dynamic>>[];
+
     return LayoutBuilder(
       builder: (context, constraints) {
         double screenW = constraints.maxWidth;
         double screenH = constraints.maxHeight;
-        double scale = (screenW / designW).clamp(0.0, screenH / designH);
-        if (designW / designH > screenW / screenH) {
-          scale = screenW / designW;
-        } else {
-          scale = screenH / designH;
-        }
+
+        double scale = Math.min(screenW / designW, screenH / designH);
+
         return Container(
           color: bg,
           alignment: Alignment.center,
@@ -273,74 +283,123 @@ class _MediaDisplayScreenState extends State<MediaDisplayScreen> {
             child: SizedBox(
               width: designW,
               height: designH,
-              child: Stack(
-                children: (_currentDesign?['elements'] as List).map<Widget>((
-                  e,
-                ) {
-                  final type = (e['type'] ?? '').toString().toLowerCase();
-                  switch (type) {
-                    case 'rect':
-                    case 'rectangle':
-                      return Positioned(
-                        left: (e['x'] ?? 0).toDouble(),
-                        top: (e['y'] ?? 0).toDouble(),
-                        child: Container(
-                          width: (e['width'] ?? 100).toDouble(),
-                          height: (e['height'] ?? 100).toDouble(),
-                          color: e['fillColor'] != null
-                              ? Color(
-                                  int.parse(
-                                    e['fillColor'].replaceFirst('#', '0xff'),
-                                  ),
-                                )
-                              : Colors.white,
-                        ),
-                      );
-                    case 'diamond':
-                      return Positioned(
-                        left: (e['x'] ?? 0).toDouble(),
-                        top: (e['y'] ?? 0).toDouble(),
-                        child: Transform.rotate(
-                          angle: 0.785398, // 45 degrees in radians
-                          child: Container(
-                            width: (e['width'] ?? 100).toDouble(),
-                            height: (e['height'] ?? 100).toDouble(),
-                            color: e['fillColor'] != null
-                                ? Color(
-                                    int.parse(
-                                      e['fillColor'].replaceFirst('#', '0xff'),
-                                    ),
-                                  )
-                                : Colors.white,
-                          ),
-                        ),
-                      );
-                    case 'triangle':
-                      return Positioned(
-                        left: (e['x'] ?? 0).toDouble(),
-                        top: (e['y'] ?? 0).toDouble(),
-                        child: CustomPaint(
-                          size: Size(
-                            (e['width'] ?? 100).toDouble(),
-                            (e['height'] ?? 100).toDouble(),
-                          ),
-                          painter: _TrianglePainter(
-                            color: e['fillColor'] != null
-                                ? Color(
-                                    int.parse(
-                                      e['fillColor'].replaceFirst('#', '0xff'),
-                                    ),
-                                  )
-                                : Colors.white,
-                          ),
-                        ),
-                      );
-                    // Add more cases for other shapes
-                    default:
-                      return const SizedBox.shrink();
-                  }
-                }).toList(),
-              ),
+              child: elements.isEmpty
+                  ? const Center(
+                      child: Text(
+                        "No elements found in this design.",
+                        style: TextStyle(color: Colors.redAccent),
+                      ),
+                    )
+                  : Stack(
+                      children: elements.map<Widget>((map) {
+                        Widget child;
+                        final type = (map['type'] ?? '')
+                            .toString()
+                            .toLowerCase();
+
+                        switch (type) {
+                          case 'rect':
+                          case 'rectangle':
+                            child = Container(
+                              width: (map['width'] ?? 100).toDouble(),
+                              height: (map['height'] ?? 100).toDouble(),
+                              decoration: BoxDecoration(
+                                color: _parseColor(
+                                  map['fillColor'] ?? '#FFFFFF',
+                                ),
+                                borderRadius: map['borderRadius'] != null
+                                    ? BorderRadius.circular(
+                                        (map['borderRadius'] ?? 0).toDouble(),
+                                      )
+                                    : null,
+                              ),
+                            );
+                            break;
+
+                          case 'circle':
+                            child = Container(
+                              width: (map['width'] ?? 100).toDouble(),
+                              height: (map['height'] ?? 100).toDouble(),
+                              decoration: BoxDecoration(
+                                color: _parseColor(
+                                  map['fillColor'] ?? '#FFFFFF',
+                                ),
+                                shape: BoxShape.circle,
+                              ),
+                            );
+                            break;
+
+                          case 'image':
+                            child = Image.network(
+                              map['content'] ?? '',
+                              fit: BoxFit.cover,
+                            );
+                            break;
+
+                          case 'text':
+                            child = SizedBox(
+                              width: (map['width'] ?? 200).toDouble(),
+                              height: (map['height'] ?? 50).toDouble(),
+                              child: Text(
+                                map['content'] ?? '',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: _parseColor(map['color'] ?? '#000000'),
+                                  fontSize: (map['fontSize'] ?? 20).toDouble(),
+                                  fontWeight:
+                                      (map['textStyle']?['bold'] ?? false)
+                                      ? FontWeight.bold
+                                      : FontWeight.normal,
+                                ),
+                              ),
+                            );
+                            break;
+
+                          default:
+                            child = Container(
+                              width: (map['width'] ?? 100).toDouble(),
+                              height: (map['height'] ?? 100).toDouble(),
+                              color: Colors.red.withOpacity(0.2),
+                              child: Center(
+                                child: Text('Unknown: ${map['type']}'),
+                              ),
+                            );
+                        }
+
+                        // Rotation
+                        if (map['rotation'] != null && map['rotation'] != 0) {
+                          child = Transform.rotate(
+                            angle: (map['rotation'] as num) * Math.pi / 180,
+                            child: child,
+                          );
+                        }
+
+                        // Opacity
+                        if (map['opacity'] != null && map['opacity'] < 1.0) {
+                          child = Opacity(
+                            opacity: (map['opacity'] as num).toDouble(),
+                            child: child,
+                          );
+                        }
+
+                        // Animation
+                        if (map['animation'] != null &&
+                            map['animation'] is Map) {
+                          child = AnimatedElement(
+                            animation: Map<String, dynamic>.from(
+                              map['animation'],
+                            ),
+                            child: child,
+                          );
+                        }
+
+                        return Positioned(
+                          left: (map['x'] ?? 0).toDouble(),
+                          top: (map['y'] ?? 0).toDouble(),
+                          child: child,
+                        );
+                      }).toList(),
+                    ),
             ),
           ),
         );
@@ -348,6 +407,22 @@ class _MediaDisplayScreenState extends State<MediaDisplayScreen> {
     );
   }
 }
+
+// Robust color parser
+Color _parseColor(String? hex) {
+  if (hex == null) return Colors.white;
+  hex = hex.replaceAll('#', '');
+  if (hex.length == 3) hex = hex.split('').map((c) => '$c$c').join();
+  if (hex.length == 6) hex = 'FF$hex';
+  if (hex.length == 8) {
+    try {
+      return Color(int.parse('0x$hex'));
+    } catch (_) {}
+  }
+  return Colors.white;
+}
+
+// --- Custom Painters for Shapes ---
 
 class _TrianglePainter extends CustomPainter {
   final Color color;
@@ -365,4 +440,222 @@ class _TrianglePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+class _PolygonPainter extends CustomPainter {
+  final int sides;
+  final Color color;
+  _PolygonPainter({required this.sides, required this.color});
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..color = color;
+    final path = Path();
+    final angle = (2 * Math.pi) / sides;
+    final radius = size.width / 2;
+    final center = Offset(size.width / 2, size.height / 2);
+    for (int i = 0; i < sides; i++) {
+      final x = center.dx + radius * Math.cos(angle * i - Math.pi / 2);
+      final y = center.dy + radius * Math.sin(angle * i - Math.pi / 2);
+      if (i == 0) {
+        path.moveTo(x, y);
+      } else {
+        path.lineTo(x, y);
+      }
+    }
+    path.close();
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+class _StarPainter extends CustomPainter {
+  final Color color;
+  _StarPainter({required this.color});
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..color = color;
+    final path = Path();
+    final n = 5;
+    final r = size.width / 2;
+    final center = Offset(size.width / 2, size.height / 2);
+    for (int i = 0; i < n * 2; i++) {
+      final isEven = i % 2 == 0;
+      final radius = isEven ? r : r / 2.5;
+      final angle = (Math.pi / n) * i - Math.pi / 2;
+      final x = center.dx + radius * Math.cos(angle);
+      final y = center.dy + radius * Math.sin(angle);
+      if (i == 0) {
+        path.moveTo(x, y);
+      } else {
+        path.lineTo(x, y);
+      }
+    }
+    path.close();
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+class _HeartPainter extends CustomPainter {
+  final Color color;
+  _HeartPainter({required this.color});
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..color = color;
+    final path = Path();
+    path.moveTo(size.width / 2, size.height * 0.8);
+    path.cubicTo(
+      size.width * 1.2,
+      size.height * 0.5,
+      size.width * 0.8,
+      size.height * 0.1,
+      size.width / 2,
+      size.height * 0.3,
+    );
+    path.cubicTo(
+      size.width * 0.2,
+      size.height * 0.1,
+      -size.width * 0.2,
+      size.height * 0.5,
+      size.width / 2,
+      size.height * 0.8,
+    );
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+class _TrapezoidPainter extends CustomPainter {
+  final Color color;
+  _TrapezoidPainter({required this.color});
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..color = color;
+    final path = Path()
+      ..moveTo(size.width * 0.2, 0)
+      ..lineTo(size.width * 0.8, 0)
+      ..lineTo(size.width, size.height)
+      ..lineTo(0, size.height)
+      ..close();
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+class _CrescentPainter extends CustomPainter {
+  final Color color;
+  _CrescentPainter({required this.color});
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..color = color;
+    final path = Path()
+      ..addOval(Rect.fromLTWH(0, 0, size.width, size.height))
+      ..addOval(Rect.fromLTWH(size.width * 0.2, 0, size.width, size.height));
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+class _CrossPainter extends CustomPainter {
+  final Color color;
+  _CrossPainter({required this.color});
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..color = color;
+    final w = size.width;
+    final h = size.height;
+    final thickness = w * 0.2;
+    final path = Path()
+      ..addRect(Rect.fromLTWH(w * 0.4, 0, thickness, h))
+      ..addRect(Rect.fromLTWH(0, h * 0.4, w, thickness));
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+// --- Animation Widget ---
+
+class AnimatedElement extends StatefulWidget {
+  final Map<String, dynamic> animation;
+  final Widget child;
+
+  const AnimatedElement({
+    required this.animation,
+    required this.child,
+    Key? key,
+  }) : super(key: key);
+
+  @override
+  State<AnimatedElement> createState() => _AnimatedElementState();
+}
+
+class _AnimatedElementState extends State<AnimatedElement>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<double> _animation;
+  late String type;
+  late double begin;
+  late double end;
+  late int duration;
+  late int delay;
+
+  @override
+  void initState() {
+    super.initState();
+    type = widget.animation['type'] ?? 'fadeIn';
+    begin = widget.animation['begin']?.toDouble() ?? 0.0;
+    end = widget.animation['end']?.toDouble() ?? 1.0;
+    duration = ((widget.animation['duration'] ?? 1.0) * 1000).toInt();
+    delay = ((widget.animation['delay'] ?? 0.0) * 1000).toInt();
+
+    _controller = AnimationController(
+      vsync: this,
+      duration: Duration(milliseconds: duration),
+    );
+
+    switch (type) {
+      case 'fadeIn':
+        _animation = Tween<double>(begin: 0.0, end: 1.0).animate(_controller);
+        break;
+      case 'scale':
+        _animation = Tween<double>(begin: begin, end: end).animate(_controller);
+        break;
+      default:
+        _animation = Tween<double>(begin: begin, end: end).animate(_controller);
+    }
+
+    Future.delayed(Duration(milliseconds: delay), () {
+      if (mounted) _controller.forward();
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    switch (type) {
+      case 'fadeIn':
+        return FadeTransition(opacity: _animation, child: widget.child);
+      case 'scale':
+        return ScaleTransition(scale: _animation, child: widget.child);
+      default:
+        return widget.child;
+    }
+  }
 }
