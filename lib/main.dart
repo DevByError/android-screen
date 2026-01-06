@@ -250,18 +250,17 @@ class SmartPlayerEngine extends StatefulWidget {
   @override
   State<SmartPlayerEngine> createState() => _SmartPlayerEngineState();
 }
+// ... imports remain the same
 
 class _SmartPlayerEngineState extends State<SmartPlayerEngine> {
-  final socket = SocketManager().socket; // Use Singleton
+  final socket = SocketManager().socket;
   bool _isConnected = true;
   Map<String, dynamic>? _activeSchedule;
-  List<dynamic> _contentQueue = [];
+  String _videoUrl = ""; // Only track ONE video URL now
   String _playlistName = "";
   VideoPlayerController? _videoController;
-  int _currentIndex = 0;
   bool _isActivePlaying = false;
   Timer? _scheduleTicker;
-  Timer? _videoDurationTimer;
 
   @override
   void initState() {
@@ -274,27 +273,23 @@ class _SmartPlayerEngineState extends State<SmartPlayerEngine> {
   }
 
   void _setupSocketListeners() {
-    // Re-register logic just in case connection drops and reconnects
     socket.onConnect((_) {
-      print("♻️ Reconnected");
       setState(() => _isConnected = true);
       socket.emit('register_screen', {'screenUUID': widget.screenUUID});
     });
 
     socket.onDisconnect((_) {
-      print("⚠️ Connection Lost");
       if (mounted) setState(() => _isConnected = false);
     });
 
-    // LISTEN FOR CONTENT
+    // LISTEN FOR UPDATED VIDEO CONTENT
     socket.on('update_schedule', (data) {
-      print("📥 CONTENT RECEIVED");
+      print("📥 VIDEO CONTENT RECEIVED: ${data['videoUrl']}");
       if (mounted) {
         setState(() {
           _activeSchedule = data['schedule'];
-          _contentQueue = data['content'];
+          _videoUrl = data['videoUrl'];
           _playlistName = data['playlistName'] ?? "Unknown";
-          _currentIndex = 0;
           _resetPlayer();
         });
         _checkScheduleLogic();
@@ -303,44 +298,25 @@ class _SmartPlayerEngineState extends State<SmartPlayerEngine> {
   }
 
   void _resetPlayer() {
-    _videoDurationTimer?.cancel();
     _videoController?.dispose();
     _videoController = null;
     _isActivePlaying = false;
   }
 
   void _checkScheduleLogic() {
-    // 1. DEBUG: Check if we have content
-    if (_contentQueue.isEmpty) {
-      print(
-        "⚠️ Schedule received but CONTENT QUEUE IS EMPTY. Nothing to play.",
-      );
-      if (_isActivePlaying) _stopPlayback();
-      return;
-    }
-
-    if (_activeSchedule == null) return;
+    if (_videoUrl.isEmpty || _activeSchedule == null) return;
 
     final bool isImmediate = _activeSchedule!['isImmediate'] == true;
     final DateTime start = DateTime.parse(_activeSchedule!['start']);
     final DateTime end = DateTime.parse(_activeSchedule!['end']);
     final DateTime now = DateTime.now();
 
-    // 2. Logic Check
-    bool shouldPlay = false;
-    if (isImmediate) {
-      // For "Now", we start immediately.
-      // We only stop if we passed the End Time.
-      shouldPlay = now.isBefore(end);
-    } else {
-      shouldPlay = now.isAfter(start) && now.isBefore(end);
-    }
-
-    print("🕒 Logic Check: Now=$now | End=$end | ShouldPlay=$shouldPlay");
+    bool shouldPlay = isImmediate
+        ? now.isBefore(end)
+        : (now.isAfter(start) && now.isBefore(end));
 
     if (shouldPlay && !_isActivePlaying) {
-      setState(() => _isActivePlaying = true);
-      _playNextVideo();
+      _startVideoPlayback();
     } else if (!shouldPlay && _isActivePlaying) {
       _stopPlayback();
     }
@@ -349,55 +325,32 @@ class _SmartPlayerEngineState extends State<SmartPlayerEngine> {
   void _stopPlayback() {
     if (mounted) setState(() => _isActivePlaying = false);
     _videoController?.pause();
-    _videoDurationTimer?.cancel();
   }
 
-  Future<void> _playNextVideo() async {
-    if (!_isActivePlaying || _contentQueue.isEmpty) return;
+  Future<void> _startVideoPlayback() async {
+    if (_videoUrl.isEmpty) return;
 
-    final item = _contentQueue[_currentIndex];
-    final String url = item['url'];
-    final int duration = (item['duration'] is int) ? item['duration'] : 10;
-
-    final newController = VideoPlayerController.networkUrl(Uri.parse(url));
+    final newController = VideoPlayerController.networkUrl(
+      Uri.parse(_videoUrl),
+    );
 
     try {
       await newController.initialize();
-      if (!_isActivePlaying) {
-        newController.dispose();
-        return;
-      }
+      newController.setLooping(true); // Loop the entire playlist video
 
       if (mounted) {
         setState(() {
           _videoController?.dispose();
           _videoController = newController;
+          _isActivePlaying = true;
         });
+        await _videoController!.play();
       }
-
-      await _videoController!.play();
-
-      _videoDurationTimer?.cancel();
-      _videoDurationTimer = Timer(Duration(seconds: duration), () {
-        if (mounted && _isActivePlaying) {
-          _currentIndex = (_currentIndex + 1) % _contentQueue.length;
-          _playNextVideo();
-        }
-      });
     } catch (e) {
-      print("Video Error: $e");
-      Timer(const Duration(seconds: 2), () {
-        if (mounted && _isActivePlaying) {
-          _currentIndex = (_currentIndex + 1) % _contentQueue.length;
-          _playNextVideo();
-        }
-      });
+      print("Playback Error: $e");
+      // Retry in 5 seconds
+      Future.delayed(const Duration(seconds: 5), () => _startVideoPlayback());
     }
-  }
-
-  String getSafeDisplayId() {
-    if (widget.screenUUID.length >= 6) return widget.screenUUID.substring(0, 6);
-    return widget.screenUUID;
   }
 
   @override
@@ -406,39 +359,45 @@ class _SmartPlayerEngineState extends State<SmartPlayerEngine> {
       backgroundColor: Colors.black,
       body: Stack(
         children: [
+          // 📺 FULL SCREEN VIDEO PLAYER
           if (_isActivePlaying &&
               _videoController != null &&
               _videoController!.value.isInitialized)
-            Center(
-              child: AspectRatio(
-                aspectRatio: _videoController!.value.aspectRatio,
-                child: VideoPlayer(_videoController!),
+            SizedBox.expand(
+              // Fill entire screen
+              child: FittedBox(
+                fit: BoxFit.fill, // Stretch to cover screen without bars
+                child: SizedBox(
+                  width: _videoController!.value.size.width,
+                  height: _videoController!.value.size.height,
+                  child: VideoPlayer(_videoController!),
+                ),
               ),
             )
           else
             _buildStandbyScreen(),
 
+          // Overlay ID and Connectivity
           Positioned(
             top: 20,
             right: 20,
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
               decoration: BoxDecoration(
-                color: Colors.black54,
+                color: Colors.black45,
                 borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: Colors.white24),
               ),
               child: Row(
                 children: [
                   Icon(
-                    _isConnected ? Icons.wifi : Icons.wifi_off,
+                    Icons.circle,
                     color: _isConnected ? Colors.green : Colors.red,
-                    size: 16,
+                    size: 10,
                   ),
                   const SizedBox(width: 8),
                   Text(
-                    "ID: ${getSafeDisplayId()}",
-                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                    "ID: ${widget.screenUUID.substring(0, 6)}",
+                    style: const TextStyle(fontSize: 10),
                   ),
                 ],
               ),
@@ -449,6 +408,7 @@ class _SmartPlayerEngineState extends State<SmartPlayerEngine> {
     );
   }
 
+  // Standby screen UI remains mostly the same...
   Widget _buildStandbyScreen() {
     return Container(
       width: double.infinity,
@@ -461,44 +421,27 @@ class _SmartPlayerEngineState extends State<SmartPlayerEngine> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const Icon(Icons.monitor, size: 80, color: Colors.white24),
+          const Icon(Icons.monitor, size: 80, color: Colors.white10),
           const SizedBox(height: 20),
           const Text(
             "SignCraft",
             style: TextStyle(
               color: Colors.white,
               fontSize: 40,
-              fontWeight: FontWeight.w300,
+              fontWeight: FontWeight.w200,
             ),
           ),
-          const SizedBox(height: 10),
           Text(
-            _isConnected
-                ? "Device Online • ${widget.screenName}"
-                : "Connecting...",
-            style: TextStyle(
-              color: _isConnected ? Colors.greenAccent : Colors.orangeAccent,
-            ),
+            _isConnected ? "Ready to Play" : "Connecting...",
+            style: const TextStyle(color: Colors.white38),
           ),
-          if (_activeSchedule != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 20),
-              child: Text(
-                "Next: $_playlistName",
-                style: const TextStyle(color: Colors.white54),
-              ),
+          if (_videoUrl.isNotEmpty)
+            Text(
+              "Next: $_playlistName",
+              style: const TextStyle(color: Colors.blueAccent),
             ),
         ],
       ),
     );
-  }
-
-  @override
-  void dispose() {
-    _scheduleTicker?.cancel();
-    _videoDurationTimer?.cancel();
-    _videoController?.dispose();
-    // Note: We DO NOT dispose the socket manager here to keep connection alive if we navigate back/forth
-    super.dispose();
   }
 }
