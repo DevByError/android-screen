@@ -5,7 +5,7 @@
 
 The display app for SignCraft, a digital signage system. It runs on an Android device connected to a screen, registers itself with the SignCraft backend, downloads the videos scheduled for that screen and plays them full screen at the right time.
 
-Content is created and scheduled in the SignCraft web app. This app only plays it.
+Content is created and scheduled in the [SignCraft web app](https://github.com/DevByError/signcraft-frontend) and served by the [SignCraft backend](https://github.com/DevByError/signcraft-backend). This app only plays it.
 
 ## Features
 
@@ -49,8 +49,8 @@ Web app: user deploys a playlist to a screen
 ## Installation
 
 ```bash
-git clone https://github.com/DevByError/ecoprse-screen.git
-cd ecoprse-screen
+git clone https://github.com/DevByError/android-screen.git
+cd android-screen
 flutter pub get
 ```
 
